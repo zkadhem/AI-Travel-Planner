@@ -1,0 +1,13 @@
+﻿@model IEnumerable<AITravelPlanner.Models.Destination>
+
+<h1>Popular Travel Destinations</h1>
+<ul>
+    @foreach (var destination in Model)
+    {
+        <li>
+            <h2>@destination.Name, @destination.Country</h2>
+            <p>@destination.Description</p>
+            <img src="@destination.ImageUrl" alt="@destination.Name" width="200px" />
+        </li>
+    }
+</ul>
