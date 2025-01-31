@@ -2,54 +2,107 @@
 using Microsoft.Extensions.Configuration;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text;
 using System.Threading.Tasks;
+using System.Linq;
 
 [ApiController]
 [Route("api/hotels")]
-public class HotelController : ControllerBase
+public class GoogleHotelController : ControllerBase
 {
     private readonly IConfiguration _configuration;
     private readonly HttpClient _httpClient;
 
-    public HotelController(IConfiguration configuration)
+    public GoogleHotelController(IConfiguration configuration)
     {
         _configuration = configuration;
         _httpClient = new HttpClient();
     }
 
+    private async Task<string> GetAccessTokenAsync()
+    {
+        var apiKey = _configuration["AmadeusAPI:ApiKey"];
+        var apiSecret = _configuration["AmadeusAPI:ApiSecret"];
+
+        if (string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(apiSecret))
+            return null;
+
+        var requestBody = new StringContent(
+            $"grant_type=client_credentials&client_id={apiKey}&client_secret={apiSecret}",
+            Encoding.UTF8, "application/x-www-form-urlencoded"
+        );
+
+        var response = await _httpClient.PostAsync("https://test.api.amadeus.com/v1/security/oauth2/token", requestBody);
+        string responseString = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"❌ Failed to obtain access token. Status: {response.StatusCode}, Response: {responseString}");
+            return null;
+        }
+
+        var json = JsonSerializer.Deserialize<JsonElement>(responseString);
+        return json.GetProperty("access_token").GetString();
+    }
+
     [HttpGet("search")]
     public async Task<IActionResult> GetHotels([FromQuery] string location, [FromQuery] string checkIn, [FromQuery] string checkOut)
     {
-        var apiKey = _configuration["AmadeusAPI:ApiKey"];
-        if (string.IsNullOrEmpty(apiKey))
-            return BadRequest("API Key is missing.");
+        string accessToken = await GetAccessTokenAsync();
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return BadRequest("❌ Failed to obtain access token. Check console logs for details.");
+        }
 
-        // Step 1: Get the Correct City Code
+        // Step 1: Fetch city information
         string citySearchUrl = $"https://test.api.amadeus.com/v1/reference-data/locations?keyword={location}&subType=CITY";
+
+        _httpClient.DefaultRequestHeaders.Clear();
+        _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
+
         var cityResponse = await _httpClient.GetAsync(citySearchUrl);
+        string cityJson = await cityResponse.Content.ReadAsStringAsync();
+
         if (!cityResponse.IsSuccessStatusCode)
-            return BadRequest("Failed to fetch city information.");
+        {
+            return BadRequest($"❌ Failed to fetch city information. Error: {cityJson}");
+        }
 
-        var cityJson = await cityResponse.Content.ReadAsStringAsync();
-        var cityData = JsonSerializer.Deserialize<AmadeusCityResponse>(cityJson);
+        // ✅ Fix: Use case-insensitive deserialization
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
+        var cityData = JsonSerializer.Deserialize<AmadeusCityResponse>(cityJson, options);
+
         if (cityData?.Data == null || cityData.Data.Length == 0)
-            return BadRequest("Invalid city name.");
+            return BadRequest($"❌ Invalid city name. Response: {cityJson}");
 
-        string cityCode = cityData.Data[0].IataCode; // Extract the city code
+        string cityCode = cityData.Data[0].IataCode;
+        Console.WriteLine($"✅ Extracted City Code: {cityCode}");
 
-        // Step 2: Fetch Hotel Data with City Code
+        // Step 2: Fetch Hotel Data with the Correct City Code
         string hotelUrl = $"https://test.api.amadeus.com/v2/shopping/hotel-offers?cityCode={cityCode}&checkInDate={checkIn}&checkOutDate={checkOut}";
-        var hotelResponse = await _httpClient.GetAsync(hotelUrl);
-        if (!hotelResponse.IsSuccessStatusCode)
-            return BadRequest("Failed to fetch hotel data.");
 
-        var hotelJson = await hotelResponse.Content.ReadAsStringAsync();
+        Console.WriteLine($"➡️  Making hotel request to: {hotelUrl}");
+
+        var hotelResponse = await _httpClient.GetAsync(hotelUrl);
+
+        Console.WriteLine($"⬅️  Hotel request completed with status: {hotelResponse.StatusCode}");
+
+        string hotelJson = await hotelResponse.Content.ReadAsStringAsync();
+
+        if (!hotelResponse.IsSuccessStatusCode)
+        {
+            return BadRequest($"❌ Failed to fetch hotel data. Error: {hotelJson}");
+        }
+
         return Content(hotelJson, "application/json");
     }
 }
 
-// Helper class to parse JSON response
-public class AmadeusCityResponse
+    // Helper class to parse JSON response
+    public class AmadeusCityResponse
 {
     public CityData[] Data { get; set; }
 }
