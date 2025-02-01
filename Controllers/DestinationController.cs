@@ -15,6 +15,6 @@ public class DestinationController : Controller
     public IActionResult Index()
     {
         var destinations = _context.Destinations.ToList();
-        return View(destinations);
+        return View(destinations); //returns to destination view
     }
 }
